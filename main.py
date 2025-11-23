@@ -96,11 +96,24 @@ async def predict_stock(ticker: str, days: int = 1):
 
     # Predict
     result = predictor.predict(ticker, days)
+    # --------------------------
+    # SAFE HISTORY DATA
+    # --------------------------
     history_df = yf.download(ticker, period="1mo", progress=False)
-    history = [
-    {"date": str(i), "price": float(p)}
-    for i, p in zip(history_df.index, history_df["Close"])
-    ]
+
+    history = []
+    if history_df is not None and not history_df.empty and "Close" in history_df:
+        for i, p in zip(history_df.index, history_df["Close"]):
+            try:
+                price = float(p)
+                history.append({"date": str(i), "price": price})
+            except:
+                pass
+
+    # If no history available → return empty list instead of crashing
+    if not history:
+        history = []
+
 
 
     return {
@@ -120,4 +133,5 @@ async def predict_stock(ticker: str, days: int = 1):
 @app.get("/")
 def home():
     return {"status": "Backend Running Successfully", "routes": ["/predict"]}
+
 
