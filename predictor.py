@@ -72,7 +72,7 @@ class HybridStockPredictor:
         if df.empty:
             raise ValueError("No stock data found")
 
-        closes = df["Close"].values
+        closes = df["Close"].values.reshape(-1) 
         volumes = df["Volume"].values
 
         X = self._build_feature_row(closes, volumes)
@@ -103,3 +103,4 @@ class HybridStockPredictor:
             "predicted": predicted_price,
             "confidence": confidence
         }
+
