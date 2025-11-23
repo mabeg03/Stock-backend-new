@@ -7,3 +7,4 @@ scikit-learn
 joblib
 python-multipart
 flask-caching
+xgboost
