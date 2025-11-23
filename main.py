@@ -23,12 +23,12 @@ predictor = HybridStockPredictor()
 def auto_fix_ticker(t: str) -> str:
     t = t.upper().strip()
 
-    # Index handling
+    # Indexes
     INDEX = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "SENSEX": "^BSESN"}
     if t in INDEX:
         return INDEX[t]
 
-    # If user already gave correct symbol
+    # Direct validity check
     try:
         df = yf.download(t, period="1mo", progress=False)
         if not df.empty:
@@ -36,7 +36,7 @@ def auto_fix_ticker(t: str) -> str:
     except:
         pass
 
-    # Try NSE
+    # NSE
     try:
         df = yf.download(t + ".NS", period="1mo", progress=False)
         if not df.empty:
@@ -44,7 +44,7 @@ def auto_fix_ticker(t: str) -> str:
     except:
         pass
 
-    # Try BSE
+    # BSE
     try:
         df = yf.download(t + ".BO", period="1mo", progress=False)
         if not df.empty:
@@ -52,11 +52,6 @@ def auto_fix_ticker(t: str) -> str:
     except:
         pass
 
-    # Crypto
-    if t in ["BTC", "ETH"]:
-        return t + "-USD"
-
-    # Nothing worked
     raise HTTPException(
         status_code=404,
         detail=f"No valid stock found for: {t}"
@@ -133,5 +128,6 @@ async def predict_stock(ticker: str, days: int = 1):
 @app.get("/")
 def home():
     return {"status": "Backend Running Successfully", "routes": ["/predict"]}
+
 
 
