@@ -71,7 +71,7 @@ def get_live_price(ticker):
 
     # 2. Try info
     try:
-        info = stock.info
+        info = stock.info or {}
         for k in ["regularMarketPrice", "currentPrice", "open", "previousClose"]:
             if k in info and info[k] is not None:
                 return float(info[k])
@@ -128,4 +128,5 @@ async def predict_stock(ticker: str, days: int = 1):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, str(e))
+
 
