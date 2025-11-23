@@ -6,7 +6,9 @@ from datetime import datetime
 
 app = FastAPI()
 
+# ---------------------------------------
 # CORS
+# ---------------------------------------
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,49 +19,33 @@ app.add_middleware(
 
 predictor = HybridStockPredictor()
 
-# --------------------------
-# SAFE TICKER VALIDATION
-# --------------------------
+# ---------------------------------------
+# AUTO FIX TICKER
+# ---------------------------------------
 def auto_fix_ticker(t: str) -> str:
     t = t.upper().strip()
 
-    # Indexes
     INDEX = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "SENSEX": "^BSESN"}
     if t in INDEX:
         return INDEX[t]
 
-    # Direct validity check
-    try:
-        df = yf.download(t, period="1mo", progress=False)
-        if not df.empty:
-            return t
-    except:
-        pass
+    # Direct test
+    if not yf.download(t, period="1mo", progress=False).empty:
+        return t
 
     # NSE
-    try:
-        df = yf.download(t + ".NS", period="1mo", progress=False)
-        if not df.empty:
-            return t + ".NS"
-    except:
-        pass
+    if not yf.download(t + ".NS", period="1mo", progress=False).empty:
+        return t + ".NS"
 
     # BSE
-    try:
-        df = yf.download(t + ".BO", period="1mo", progress=False)
-        if not df.empty:
-            return t + ".BO"
-    except:
-        pass
+    if not yf.download(t + ".BO", period="1mo", progress=False).empty:
+        return t + ".BO"
 
-    raise HTTPException(
-        status_code=404,
-        detail=f"No valid stock found for: {t}"
-    )
+    raise HTTPException(status_code=404, detail=f"No valid stock found for: {t}")
 
-# --------------------------
+# ---------------------------------------
 # GET LIVE PRICE
-# --------------------------
+# ---------------------------------------
 def get_live_price(ticker: str):
     try:
         stock = yf.Ticker(ticker)
@@ -67,67 +53,59 @@ def get_live_price(ticker: str):
     except:
         info = {}
 
-    price = None
     if "regularMarketPrice" in info:
-        price = info["regularMarketPrice"]
-    else:
-        df = stock.history(period="1d")
-        if not df.empty:
-            price = df["Close"].iloc[-1]
+        return info["regularMarketPrice"]
 
-    return price
+    df = stock.history(period="1d")
+    if not df.empty:
+        return df["Close"].iloc[-1]
 
-# --------------------------
-# PREDICT ENDPOINT
-# --------------------------
+    return None
+
+# ---------------------------------------
+# PREDICT ENDPOINT (WITH 7-DAY SUPPORT)
+# ---------------------------------------
 @app.get("/predict")
 async def predict_stock(ticker: str, days: int = 1):
     ticker = auto_fix_ticker(ticker)
 
-    # Get live price safely
     live_price = get_live_price(ticker)
     if live_price is None:
         raise HTTPException(status_code=400, detail="Unable to fetch live price")
 
-    # Predict
+    # Call predictor (now returns 1-day + 7-day forecast)
     result = predictor.predict(ticker, days)
+
     # --------------------------
-    # SAFE HISTORY DATA
+    # SAFE HISTORY FETCH
     # --------------------------
     history_df = yf.download(ticker, period="1mo", progress=False)
-
     history = []
-    if history_df is not None and not history_df.empty and "Close" in history_df:
+
+    if not history_df.empty and "Close" in history_df:
         for i, p in zip(history_df.index, history_df["Close"]):
             try:
-                price = float(p)
-                history.append({"date": str(i), "price": price})
+                history.append({"date": str(i), "price": float(p)})
             except:
                 pass
 
-    # If no history available → return empty list instead of crashing
-    if not history:
-        history = []
-
-
-
     return {
-    "ticker": ticker,
-    "predicted_price": result["predicted"],
-    "current_price": live_price,
-    "confidence": result["confidence"],
-    "days_ahead": days,
-    "timestamp": datetime.now().isoformat(),
-    "historical_prices": history
+        "ticker": ticker,
+        "current_price": live_price,
+
+        # NEW OUTPUT:
+        "predicted_next_day": result.get("predicted_next_day"),
+        "predicted_7_days": result.get("predicted_7_days", []),
+
+        "confidence": result["confidence"],
+        "days_ahead": days,
+        "timestamp": datetime.now().isoformat(),
+        "historical_prices": history
     }
 
-
-# --------------------------
-# ROOT ROUTE (IMPORTANT!)
-# --------------------------
+# ---------------------------------------
+# ROOT ROUTE
+# ---------------------------------------
 @app.get("/")
 def home():
     return {"status": "Backend Running Successfully", "routes": ["/predict"]}
-
-
-
