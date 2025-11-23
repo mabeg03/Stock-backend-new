@@ -5,32 +5,47 @@ import joblib
 import yfinance as yf
 
 
+# ------------------------- Indicators -------------------------
 def compute_rsi(series, period=14):
-    delta = series.diff()
+    if len(series) < period + 1:
+        return pd.Series([50] * len(series))
+
+    delta = series.diff().fillna(0)
     up = delta.clip(lower=0)
     down = -1 * delta.clip(upper=0)
     ma_up = up.ewm(alpha=1/period).mean()
-    ma_down = down.ewm(alpha=1/period).mean()
-    rs = ma_up / (ma_down + 1e-9)
-    rsi = 100 - (100 / (1 + rs))
-    return rsi.fillna(50)
+    ma_down = ma_down = down.ewm(alpha=1/period).mean() + 1e-9
+
+    rs = ma_up / ma_down
+    return 100 - (100 / (1 + rs))
 
 
 def compute_macd(series):
+    if len(series) < 30:
+        n = len(series)
+        return (
+            pd.Series([0] * n),
+            pd.Series([0] * n),
+            pd.Series([0] * n),
+        )
+
     ema12 = series.ewm(span=12).mean()
     ema26 = series.ewm(span=26).mean()
     macd = ema12 - ema26
     signal = macd.ewm(span=9).mean()
     hist = macd - signal
-    return macd.fillna(0), signal.fillna(0), hist.fillna(0)
+
+    return macd, signal, hist
 
 
+# ------------------------- Predictor Class -------------------------
 class HybridStockPredictor:
     def __init__(self):
         base_dir = os.path.dirname(__file__)
         self.model = joblib.load(os.path.join(base_dir, "xgb_model.joblib"))
         self.scaler = joblib.load(os.path.join(base_dir, "scaler_feat.joblib"))
 
+    # Build feature row for model
     def _build_feature_row(self, closes, volumes):
         closes = np.array(closes).reshape(-1)
         volumes = np.array(volumes).reshape(-1)
@@ -39,70 +54,73 @@ class HybridStockPredictor:
             raise ValueError("Need at least 60 candles for prediction.")
 
         s = pd.Series(closes)
-        w = s[-60:]
+        window = s[-60:]
 
-        lag1 = float(w.iloc[-1])
-        ma7 = float(w.tail(7).mean())
-        ma21 = float(w.tail(21).mean())
-        ema12 = float(w.ewm(span=12).mean().iloc[-1])
-        ema26 = float(w.ewm(span=26).mean().iloc[-1])
-        ema50 = float(w.ewm(span=50).mean().iloc[-1])
-        std21 = float(w.tail(21).std())
+        rsi14 = float(compute_rsi(window).iloc[-1])
+        macd_v, macd_s, macd_h = compute_macd(window)
 
-        upper_bb = ma21 + 2 * std21
-        lower_bb = ma21 - 2 * std21
+        features = [
+            float(window.iloc[-1]),                       # LAG-1
+            float(window.tail(7).mean()),                 # MA7
+            float(window.tail(21).mean()),                # MA21
+            float(window.ewm(span=12).mean().iloc[-1]),   # EMA12
+            float(window.ewm(span=26).mean().iloc[-1]),   # EMA26
+            float(window.ewm(span=50).mean().iloc[-1]),   # EMA50
+            float(window.tail(21).std()),                 # STD21
+            float(window.tail(21).mean() + 2 * window.tail(21).std()),  # Upper BB
+            float(window.tail(21).mean() - 2 * window.tail(21).std()),  # Lower BB
+            rsi14,                                        # RSI
+            float(macd_v.iloc[-1]),                       # MACD
+            float(macd_s.iloc[-1]),                       # MACD Signal
+            float(macd_h.iloc[-1]),                       # MACD Histogram
+            float(volumes[-1]),                           # Last volume
+        ]
 
-        rsi14 = float(compute_rsi(w).iloc[-1])
+        return np.array([features])
 
-        macd_v, macd_s, macd_h = compute_macd(w)
-        macd_val = float(macd_v.iloc[-1])
-        macd_sig_val = float(macd_s.iloc[-1])
-        macd_hist_val = float(macd_h.iloc[-1])
-
-        last_volume = float(volumes[-1])
-
-        features = np.array([
-            lag1, ma7, ma21,
-            ema12, ema26, ema50,
-            std21, upper_bb, lower_bb,
-            rsi14, macd_val, macd_sig_val, macd_hist_val,
-            last_volume
-        ], dtype=float)
-
-        return features.reshape(1, -1)
-
-    # ------------------------------------------------------------------------------------
-    # ✅ FIXED predict() method (correctly inside class, no indent errors)
-    # ------------------------------------------------------------------------------------
+    # ------------------------- PREDICT -------------------------
     def predict(self, ticker: str, days: int = 1):
-        df = yf.download(ticker, period="1y", interval="1d", progress=False)
-        if df.empty:
-            return {"error": "No stock data found"}
+        t = ticker.upper().strip()
 
+        # Try NSE first
+        df = yf.download(t + ".NS", period="1y", interval="1d", progress=False)
+
+        # Try raw ticker
+        if df.empty:
+            df = yf.download(t, period="1y", interval="1d", progress=False)
+
+        # Try BSE
+        if df.empty:
+            df = yf.download(t + ".BO", period="1y", interval="1d", progress=False)
+
+        if df.empty:
+            return {"error": f"No market data found for {ticker}"}
+
+        # 1D arrays
         closes = df["Close"].values.reshape(-1)
         volumes = df["Volume"].values.reshape(-1)
 
+        # Build features
         X = self._build_feature_row(closes, volumes)
         X_scaled = self.scaler.transform(X)
 
-        raw_return = float(self.model.predict(X_scaled)[0])
-
-        returns_series = pd.Series(closes).pct_change()
-
-        trend_10 = float(returns_series.tail(10).mean()) if len(returns_series) > 10 else 0.0
-        trend_30 = float(returns_series.tail(30).mean()) if len(returns_series) > 30 else trend_10
-
-        blended_return = (0.6 * raw_return) + (0.2 * trend_10) + (0.2 * trend_30)
-
-        adjusted_return = max(-0.05, min(0.05, blended_return))
+        # ---------------- NEW: Model predicts next-day PRICE ----------------
+        raw_price = float(self.model.predict(X_scaled)[0])
 
         last_price = float(closes[-1])
-        predicted_price = round(last_price * (1 + adjusted_return), 2)
 
-        recent_vol = returns_series.tail(30)
-        vol = float(recent_vol.std()) if not recent_vol.empty else 0.02
+        # Safety clamp (±15%)
+        lower = last_price * 0.85
+        upper = last_price * 1.15
+        predicted_price = min(max(raw_price, lower), upper)
+        predicted_price = round(predicted_price, 2)
 
-        confidence = max(0.0, min(1.0, 1 - (vol * 8)))
+        # ---------------- Confidence ----------------
+        returns = pd.Series(closes).pct_change().tail(30)
+        vol = float(returns.std()) if not returns.empty else 0.02
+
+        confidence = 1 - (vol * 8)       # higher volatility => lower confidence
+        confidence = max(0.0, min(1.0, confidence))
         confidence = round(confidence, 3)
 
         return {
