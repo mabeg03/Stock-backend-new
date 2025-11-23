@@ -96,15 +96,23 @@ async def predict_stock(ticker: str, days: int = 1):
 
     # Predict
     result = predictor.predict(ticker, days)
+    history_df = yf.download(ticker, period="1mo", progress=False)
+    history = [
+    {"date": str(i), "price": float(p)}
+    for i, p in zip(history_df.index, history_df["Close"])
+    ]
+
 
     return {
-        "ticker": ticker,
-        "predicted_price": result["predicted"],
-        "current_price": live_price,
-        "confidence": result["confidence"],
-        "days_ahead": days,
-        "timestamp": datetime.now().isoformat()
+    "ticker": ticker,
+    "predicted_price": result["predicted"],
+    "current_price": live_price,
+    "confidence": result["confidence"],
+    "days_ahead": days,
+    "timestamp": datetime.now().isoformat(),
+    "historical_prices": history
     }
+
 
 # --------------------------
 # ROOT ROUTE (IMPORTANT!)
@@ -112,3 +120,4 @@ async def predict_stock(ticker: str, days: int = 1):
 @app.get("/")
 def home():
     return {"status": "Backend Running Successfully", "routes": ["/predict"]}
+
