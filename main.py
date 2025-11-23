@@ -28,23 +28,35 @@ def auto_fix_ticker(t):
     if t in INDEX:
         return INDEX[t]
 
+    # If user already gave proper symbol
     if "." in t:
         return t
 
-    # NSE first
-    if not yf.download(t + ".NS", period="1mo").empty:
-        return t + ".NS"
+    # TRY NSE
+    try:
+        df = yf.download(t + ".NS", period="1mo", progress=False)
+        if not df.empty:
+            return t + ".NS"
+    except:
+        pass
 
-    # BSE next
-    if not yf.download(t + ".BO", period="1mo").empty:
-        return t + ".BO"
+    # TRY BSE
+    try:
+        df = yf.download(t + ".BO", period="1mo", progress=False)
+        if not df.empty:
+            return t + ".BO"
+    except:
+        pass
 
-    # Crypto
+    # Crypto format
     if t in ["BTC", "ETH"]:
         return t + "-USD"
 
-    return t
-
+    # If ALL checks failed → return INVALID
+    raise HTTPException(
+        status_code=404,
+        detail=f"No valid stock found for: {t}"
+    )
 
 def get_live_price(ticker):
     """Return most accurate current market price available."""
@@ -116,3 +128,4 @@ async def predict_stock(ticker: str, days: int = 1):
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(500, str(e))
+
