@@ -96,50 +96,50 @@ class HybridStockPredictor:
     # PREDICT FOR 1–7 DAYS
     # ------------------------------------------------------
     def predict(self, ticker: str, days: int = 1):
-    # ---- STEP 1: SAFE DATA DOWNLOAD ----
-    df = yf.download(ticker, period="1y", interval="1d", progress=False)
-    if df is None or df.empty or "Close" not in df:
-        return {"predicted": None, "confidence": 0}
+        # ---- STEP 1: SAFE DATA DOWNLOAD ----
+        df = yf.download(ticker, period="1y", interval="1d", progress=False)
+        if df is None or df.empty or "Close" not in df:
+            return {"predicted": None, "confidence": 0}
 
-    closes = df["Close"].values.reshape(-1)
-    volumes = df["Volume"].values.reshape(-1)
+        closes = df["Close"].values.reshape(-1)
+        volumes = df["Volume"].values.reshape(-1)
 
-    # ---- STEP 2: NEED MINIMUM 60 CANDLES ----
-    if len(closes) < 60:
-        return {"predicted": None, "confidence": 0}
+        # ---- STEP 2: NEED MINIMUM 60 CANDLES ----
+        if len(closes) < 60:
+            return {"predicted": None, "confidence": 0}
 
-    try:
-        # ---- BUILD FEATURES ----
-        X = self._build_feature_row(closes, volumes)
-        X_scaled = self.scaler.transform(X)
+        try:
+            # ---- BUILD FEATURES ----
+            X = self._build_feature_row(closes, volumes)
+            X_scaled = self.scaler.transform(X)
 
-        # ---- MODEL RETURN ----
-        raw_return = float(self.model.predict(X_scaled)[0])
+            # ---- MODEL RETURN ----
+            raw_return = float(self.model.predict(X_scaled)[0])
 
-    except Exception as e:
-        print("Model error:", e)
-        return {"predicted": None, "confidence": 0}
+        except Exception as e:
+            print("Model error:", e)
+            return {"predicted": None, "confidence": 0}
 
-    # ---- RECENT TREND ----
-    returns_series = pd.Series(closes).pct_change()
+        # ---- RECENT TREND ----
+        returns_series = pd.Series(closes).pct_change()
 
-    trend_10 = returns_series.tail(10).mean() if len(returns_series) >= 10 else 0
-    trend_30 = returns_series.tail(30).mean() if len(returns_series) >= 30 else trend_10
+        trend_10 = returns_series.tail(10).mean() if len(returns_series) >= 10 else 0
+        trend_30 = returns_series.tail(30).mean() if len(returns_series) >= 30 else trend_10
 
-    # ---- BLEND SIGNAL + TREND ----
-    blended_return = (0.6 * raw_return) + (0.2 * trend_10) + (0.2 * trend_30)
+        # ---- BLEND SIGNAL + TREND ----
+        blended_return = (0.6 * raw_return) + (0.2 * trend_10) + (0.2 * trend_30)
 
-    # ---- REALISTIC LIMIT ----
-    adjusted_return = max(-0.05, min(0.05, blended_return))
+        # ---- REALISTIC LIMIT ----
+        adjusted_return = max(-0.05, min(0.05, blended_return))
 
-    last_price = float(closes[-1])
-    predicted_price = round(last_price * (1 + adjusted_return), 2)
+        last_price = float(closes[-1])
+        predicted_price = round(last_price * (1 + adjusted_return), 2)
 
-    # ---- CONFIDENCE ----
-    vol = returns_series.tail(30).std() if len(returns_series) > 30 else 0.02
-    confidence = round(max(0.0, min(1.0, 1 - (vol * 8))), 3)
+        # ---- CONFIDENCE ----
+        vol = returns_series.tail(30).std() if len(returns_series) > 30 else 0.02
+        confidence = round(max(0.0, min(1.0, 1 - (vol * 8))), 3)
 
-    return {
-        "predicted": predicted_price,
-        "confidence": confidence
-    }
+        return {
+            "predicted": predicted_price,
+            "confidence": confidence
+        }
