@@ -1,12 +1,12 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from predictor import HybridStockPredictor
 import yfinance as yf
+from predictor import HybridStockPredictor
 from datetime import datetime
-import traceback
 
 app = FastAPI()
 
+# CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -17,22 +17,26 @@ app.add_middleware(
 
 predictor = HybridStockPredictor()
 
-def auto_fix_ticker(t):
+# --------------------------
+# SAFE TICKER VALIDATION
+# --------------------------
+def auto_fix_ticker(t: str) -> str:
     t = t.upper().strip()
 
-    INDEX = {
-        "NIFTY": "^NSEI",
-        "BANKNIFTY": "^NSEBANK",
-        "SENSEX": "^BSESN"
-    }
+    # Index handling
+    INDEX = {"NIFTY": "^NSEI", "BANKNIFTY": "^NSEBANK", "SENSEX": "^BSESN"}
     if t in INDEX:
         return INDEX[t]
 
-    # If user already gave proper symbol
-    if "." in t:
-        return t
+    # If user already gave correct symbol
+    try:
+        df = yf.download(t, period="1mo", progress=False)
+        if not df.empty:
+            return t
+    except:
+        pass
 
-    # TRY NSE
+    # Try NSE
     try:
         df = yf.download(t + ".NS", period="1mo", progress=False)
         if not df.empty:
@@ -40,7 +44,7 @@ def auto_fix_ticker(t):
     except:
         pass
 
-    # TRY BSE
+    # Try BSE
     try:
         df = yf.download(t + ".BO", period="1mo", progress=False)
         if not df.empty:
@@ -48,85 +52,63 @@ def auto_fix_ticker(t):
     except:
         pass
 
-    # Crypto format
+    # Crypto
     if t in ["BTC", "ETH"]:
         return t + "-USD"
 
-    # If ALL checks failed → return INVALID
+    # Nothing worked
     raise HTTPException(
         status_code=404,
         detail=f"No valid stock found for: {t}"
     )
 
-def get_live_price(ticker):
-    """Return most accurate current market price available."""
-    stock = yf.Ticker(ticker)
-
-    # 1. Try fast_info
+# --------------------------
+# GET LIVE PRICE
+# --------------------------
+def get_live_price(ticker: str):
     try:
-        p = stock.fast_info["last_price"]
-        if p: return float(p)
-    except:
-        pass
-
-    # 2. Try info
-    try:
+        stock = yf.Ticker(ticker)
         info = stock.info or {}
-        for k in ["regularMarketPrice", "currentPrice", "open", "previousClose"]:
-            if k in info and info[k] is not None:
-                return float(info[k])
     except:
-        pass
+        info = {}
 
-    # 3. Try 1m history
-    try:
-        df = stock.history(period="1d", interval="1m")
+    price = None
+    if "regularMarketPrice" in info:
+        price = info["regularMarketPrice"]
+    else:
+        df = stock.history(period="1d")
         if not df.empty:
-            return float(df["Close"].iloc[-1])
-    except:
-        pass
+            price = df["Close"].iloc[-1]
 
-    # 4. Try daily history
-    try:
-        df = stock.history(period="5d")
-        if not df.empty:
-            return float(df["Close"].iloc[-1])
-    except:
-        pass
+    return price
 
-    raise Exception("Unable to fetch live price")
-
-
+# --------------------------
+# PREDICT ENDPOINT
+# --------------------------
 @app.get("/predict")
 async def predict_stock(ticker: str, days: int = 1):
-    try:
-        ticker = auto_fix_ticker(ticker)
+    ticker = auto_fix_ticker(ticker)
 
-        live_price = get_live_price(ticker)
+    # Get live price safely
+    live_price = get_live_price(ticker)
+    if live_price is None:
+        raise HTTPException(status_code=400, detail="Unable to fetch live price")
 
-        result = predictor.predict(ticker, days)
+    # Predict
+    result = predictor.predict(ticker, days)
 
-        # Historical prices for your UI
-        hist = yf.Ticker(ticker).history(period="7d")
-        history = [
-            {"date": idx.strftime("%Y-%m-%d"), "price": float(row["Close"])}
-            for idx, row in hist.iterrows()
-        ]
+    return {
+        "ticker": ticker,
+        "predicted_price": result["predicted"],
+        "current_price": live_price,
+        "confidence": result["confidence"],
+        "days_ahead": days,
+        "timestamp": datetime.now().isoformat()
+    }
 
-        return {
-            "ticker": ticker,
-            "company_name": yf.Ticker(ticker).info.get("longName", ticker),
-            "current_price": round(live_price, 2),
-            "predicted_price": round(result["predicted"], 2),
-            "confidence": result["confidence"],
-            "days_ahead": days,
-            "historical_prices": history,
-            "timestamp": datetime.now().isoformat(),
-            "currency_symbol": "₹" if ticker.endswith(".NS") or ticker.endswith(".BO") else "$"
-        }
-
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(500, str(e))
-
-
+# --------------------------
+# ROOT ROUTE (IMPORTANT!)
+# --------------------------
+@app.get("/")
+def home():
+    return {"status": "Backend Running Successfully", "routes": ["/predict"]}
